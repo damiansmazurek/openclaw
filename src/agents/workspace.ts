@@ -17,6 +17,7 @@ import {
 } from "../infra/boundary-file-read.js";
 import { sameFileIdentity, type FileIdentityStat } from "../infra/fs-safe-advanced.js";
 import { FsSafeError, pathExists, root as fsSafeRoot } from "../infra/fs-safe.js";
+import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { retryAsync } from "../infra/retry.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -85,7 +86,7 @@ const workspaceTemplateCache = new Map<string, Promise<string>>();
 // Git availability is process-stable; cache the probe result, including failure, until restart.
 let gitAvailabilityPromise: Promise<boolean> | null = null;
 
-// File content cache keyed by stable file identity to avoid stale reads.
+const MAX_WORKSPACE_FILE_CACHE_ENTRIES = 64;
 const workspaceFileCache = new Map<string, { content: string; identity: string }>();
 type WorkspaceFileSourceIdentity = readonly [
   canonicalPath: string,
@@ -95,9 +96,7 @@ type WorkspaceFileSourceIdentity = readonly [
 // Loader-owned records retain the pinned-open identity through final session filtering.
 const workspaceFileSourceIdentities = new WeakMap<object, WorkspaceFileSourceIdentity>();
 
-/**
- * Read workspace files via boundary-safe open and cache by inode/dev/size/mtime/ctime identity.
- */
+/** Read workspace files via a pinned open and bounded metadata-identity cache. */
 type WorkspaceGuardedReadResult =
   | { ok: true; content: string; sourceIdentity: WorkspaceFileSourceIdentity }
   | { ok: false; reason: "path" | "validation" | "io"; error?: unknown };
@@ -171,6 +170,8 @@ async function readWorkspaceFileWithGuards(params: {
         const cached =
           params.useCache === false ? undefined : workspaceFileCache.get(params.filePath);
         if (cached?.identity === identity) {
+          workspaceFileCache.delete(params.filePath);
+          workspaceFileCache.set(params.filePath, cached);
           syncFs.closeSync(opened.fd);
           return { ok: true, content: cached.content, sourceIdentity };
         }
@@ -178,7 +179,9 @@ async function readWorkspaceFileWithGuards(params: {
         try {
           const content = await readWorkspaceBootstrapFile(opened.fd);
           if (params.useCache !== false) {
+            workspaceFileCache.delete(params.filePath);
             workspaceFileCache.set(params.filePath, { content, identity });
+            pruneMapToMaxSize(workspaceFileCache, MAX_WORKSPACE_FILE_CACHE_ENTRIES);
           }
           return { ok: true, content, sourceIdentity };
         } finally {

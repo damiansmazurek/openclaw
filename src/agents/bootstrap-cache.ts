@@ -48,8 +48,8 @@ export async function getOrLoadBootstrapFiles(params: {
 }): Promise<WorkspaceBootstrapFile[]> {
   pruneMapToMaxSize(cache, MAX_BOOTSTRAP_SNAPSHOTS);
   const existing = cache.get(params.sessionKey);
-  // Refresh per turn so long-lived sessions pick up edits; loadWorkspaceBootstrapFiles
-  // handles unchanged file content through its guarded inode/mtime cache.
+  // Refresh per turn so long-lived sessions pick up edits; unchanged snapshots
+  // retain object identity below to keep prompt bytes stable.
   const files = await loadWorkspaceBootstrapFiles(params.workspaceDir);
   if (
     existing &&
