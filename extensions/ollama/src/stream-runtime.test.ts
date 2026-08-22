@@ -1611,6 +1611,45 @@ async function createOllamaTestStream(params: {
   );
 }
 
+type OllamaLocalService = NonNullable<
+  Parameters<typeof createConfiguredOllamaStreamFn>[0]["localService"]
+>;
+
+async function createManagedOllamaTestStream(params: {
+  baseUrl: string;
+  providerId?: string;
+  defaultHeaders?: Record<string, string>;
+  model?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  options?: Parameters<ReturnType<typeof createConfiguredOllamaStreamFn>>[2];
+  acquire: OllamaLocalService["acquire"];
+}) {
+  const streamFn = createConfiguredOllamaStreamFn({
+    model: {
+      baseUrl: params.baseUrl,
+      headers: params.defaultHeaders,
+    },
+    providerBaseUrl: params.baseUrl,
+    localService: {
+      providerId: params.providerId ?? "custom-ollama",
+      acquire: params.acquire,
+    },
+  });
+  return streamFn(
+    {
+      id: "qwen3:32b",
+      api: "ollama",
+      provider: params.providerId ?? "custom-ollama",
+      contextWindow: 131072,
+      ...params.model,
+    } as unknown as Parameters<typeof streamFn>[0],
+    (params.context ?? {
+      messages: [{ role: "user", content: "hello" }],
+    }) as unknown as Parameters<typeof streamFn>[1],
+    (params.options ?? {}) as unknown as Parameters<typeof streamFn>[2],
+  );
+}
+
 async function collectStreamEvents<T>(stream: AsyncIterable<T>): Promise<T[]> {
   const events: T[] = [];
   for await (const event of stream) {
@@ -3303,6 +3342,269 @@ describe("createConfiguredOllamaStreamFn", () => {
         expect(requireHeaders(requestInit.headers).Authorization).toBe("Bearer proxy-token");
       },
     );
+  });
+
+  it("acquires the exact provider service after final payload and headers, before fetch", async () => {
+    const signal = new AbortController().signal;
+    const leaseRelease = vi.fn();
+    const acquire = vi.fn(async () => ({ release: leaseRelease }));
+    const guardRelease = vi.fn(async () => undefined);
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(
+        [
+          '{"model":"m","created_at":"t","message":{"role":"assistant","content":"ok"},"done":false}',
+          '{"model":"m","created_at":"t","message":{"role":"assistant","content":""},"done":true}',
+        ].join("\n"),
+        { status: 200 },
+      ),
+      release: guardRelease,
+    });
+
+    const stream = await createManagedOllamaTestStream({
+      baseUrl: "http://provider-host:11434",
+      providerId: "ollama-gpu",
+      defaultHeaders: { "X-Provider": "provider" },
+      options: {
+        apiKey: "real-token", // pragma: allowlist secret
+        headers: { "X-Request": "request" },
+        onPayload: async (payload) => ({ ...requireRecord(payload, "payload"), model: "patched" }),
+        signal,
+      },
+      acquire,
+    });
+    await collectStreamEvents(stream);
+
+    expect(acquire).toHaveBeenCalledWith(
+      {
+        providerId: "ollama-gpu",
+        baseUrl: "http://provider-host:11434",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer real-token",
+          "X-Provider": "provider",
+          "X-Request": "request",
+        },
+      },
+      signal,
+    );
+    expect(getGuardedFetchJsonBody(fetchWithSsrFGuardMock).model).toBe("patched");
+    expect(acquire.mock.invocationCallOrder[0]).toBeLessThan(
+      expectDefined(fetchWithSsrFGuardMock.mock.invocationCallOrder[0], "fetch call order"),
+    );
+    expect(guardRelease).toHaveBeenCalledOnce();
+    expect(leaseRelease).toHaveBeenCalledOnce();
+    expect(guardRelease.mock.invocationCallOrder[0]).toBeLessThan(
+      expectDefined(leaseRelease.mock.invocationCallOrder[0], "lease release call order"),
+    );
+  });
+
+  it("holds the local-service lease through incomplete NDJSON handling", async () => {
+    const encoder = new TextEncoder();
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(streamController) {
+        controller = streamController;
+      },
+    });
+    const leaseRelease = vi.fn();
+    const acquire = vi.fn(async () => ({ release: leaseRelease }));
+    const guardRelease = vi.fn(async () => undefined);
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(body, { status: 200 }),
+      release: guardRelease,
+    });
+
+    const eventsPromise = collectStreamEvents(
+      await createManagedOllamaTestStream({
+        baseUrl: "http://provider-host:11434",
+        acquire,
+      }),
+    );
+    await vi.waitFor(() => expect(fetchWithSsrFGuardMock).toHaveBeenCalledOnce());
+    expectDefined(controller, "controlled NDJSON stream").enqueue(
+      encoder.encode(
+        '{"model":"m","created_at":"t","message":{"role":"assistant","content":"partial"},"done":false}\n',
+      ),
+    );
+    await vi.waitFor(() => expect(leaseRelease).not.toHaveBeenCalled());
+    expectDefined(controller, "controlled NDJSON stream").close();
+    const events = await eventsPromise;
+
+    expect(events.at(-1)).toMatchObject({ type: "error", reason: "error" });
+    expect(guardRelease).toHaveBeenCalledOnce();
+    expect(leaseRelease).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      name: "success",
+      response: new Response(
+        [
+          '{"model":"m","created_at":"t","message":{"role":"assistant","content":"ok"},"done":false}',
+          '{"model":"m","created_at":"t","message":{"role":"assistant","content":""},"done":true}',
+        ].join("\n"),
+        { status: 200 },
+      ),
+    },
+    { name: "non-2xx", response: new Response("unavailable", { status: 503 }) },
+    { name: "empty body", response: new Response(null, { status: 200 }) },
+    { name: "malformed NDJSON", response: new Response("not-json\n", { status: 200 }) },
+    {
+      name: "incomplete NDJSON",
+      response: new Response(
+        '{"model":"m","created_at":"t","message":{"role":"assistant","content":"partial"},"done":false}\n',
+        { status: 200 },
+      ),
+    },
+  ])("releases the service exactly once after $name", async ({ response }) => {
+    const leaseRelease = vi.fn();
+    const acquire = vi.fn(async () => ({ release: leaseRelease }));
+    const guardRelease = vi.fn(async () => undefined);
+    fetchWithSsrFGuardMock.mockResolvedValue({ response, release: guardRelease });
+
+    await collectStreamEvents(
+      await createManagedOllamaTestStream({
+        baseUrl: "http://provider-host:11434",
+        acquire,
+      }),
+    );
+
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(guardRelease).toHaveBeenCalledOnce();
+    expect(leaseRelease).toHaveBeenCalledOnce();
+  });
+
+  it("releases the service exactly once when guarded fetch rejects", async () => {
+    const leaseRelease = vi.fn();
+    const acquire = vi.fn(async () => ({ release: leaseRelease }));
+    fetchWithSsrFGuardMock.mockRejectedValue(new Error("connect failed"));
+
+    const events = await collectStreamEvents(
+      await createManagedOllamaTestStream({
+        baseUrl: "http://provider-host:11434",
+        acquire,
+      }),
+    );
+
+    expect(events).toMatchObject([{ type: "error", reason: "error" }]);
+    expect(leaseRelease).toHaveBeenCalledOnce();
+  });
+
+  it("releases the service after a response hook failure", async () => {
+    const leaseRelease = vi.fn();
+    const acquire = vi.fn(async () => ({ release: leaseRelease }));
+    const guardRelease = vi.fn(async () => undefined);
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(
+        '{"model":"m","created_at":"t","message":{"role":"assistant","content":"ok"},"done":true}\n',
+        { status: 200 },
+      ),
+      release: guardRelease,
+    });
+
+    const events = await collectStreamEvents(
+      await createManagedOllamaTestStream({
+        baseUrl: "http://provider-host:11434",
+        options: {
+          onResponse: () => {
+            throw new Error("response hook failed");
+          },
+        },
+        acquire,
+      }),
+    );
+
+    expect(events).toMatchObject([{ type: "error", reason: "error" }]);
+    expect(guardRelease).toHaveBeenCalledOnce();
+    expect(leaseRelease).toHaveBeenCalledOnce();
+  });
+
+  it("releases the service exactly once when the request signal aborts", async () => {
+    const controller = new AbortController();
+    const leaseRelease = vi.fn();
+    const acquire = vi.fn(async () => ({ release: leaseRelease }));
+    const guardRelease = vi.fn(async () => undefined);
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(
+        '{"model":"m","created_at":"t","message":{"role":"assistant","content":"partial"},"done":false}\n',
+        { status: 200 },
+      ),
+      release: guardRelease,
+    });
+    controller.abort();
+
+    const events = await collectStreamEvents(
+      await createManagedOllamaTestStream({
+        baseUrl: "http://provider-host:11434",
+        options: { signal: controller.signal },
+        acquire,
+      }),
+    );
+
+    expect(events).toMatchObject([{ type: "error", reason: "aborted" }]);
+    expect(guardRelease).toHaveBeenCalledOnce();
+    expect(leaseRelease).toHaveBeenCalledOnce();
+  });
+
+  it("skips fetch and emits a terminal stream error when acquisition rejects", async () => {
+    const acquire = vi.fn(async () => {
+      throw new Error("local service failed");
+    });
+
+    const events = await collectStreamEvents(
+      await createManagedOllamaTestStream({
+        baseUrl: "http://provider-host:11434",
+        acquire,
+      }),
+    );
+
+    expect(events).toMatchObject([
+      { type: "error", reason: "error", error: { errorMessage: "local service failed" } },
+    ]);
+    expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+  });
+
+  it("does not acquire or fetch when payload preparation rejects", async () => {
+    const acquire = vi.fn();
+
+    const events = await collectStreamEvents(
+      await createManagedOllamaTestStream({
+        baseUrl: "http://provider-host:11434",
+        options: {
+          onPayload: () => {
+            throw new Error("payload rejected");
+          },
+        },
+        acquire,
+      }),
+    );
+
+    expect(events).toMatchObject([{ type: "error", reason: "error" }]);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves successful chat behavior when acquisition returns no lease", async () => {
+    const acquire = vi.fn(async () => undefined);
+    const guardRelease = vi.fn(async () => undefined);
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(
+        '{"model":"m","created_at":"t","message":{"role":"assistant","content":"ok"},"done":true}\n',
+        { status: 200 },
+      ),
+      release: guardRelease,
+    });
+
+    const events = await collectStreamEvents(
+      await createManagedOllamaTestStream({
+        baseUrl: "http://provider-host:11434",
+        acquire,
+      }),
+    );
+
+    expect(events.at(-1)).toMatchObject({ type: "done" });
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(guardRelease).toHaveBeenCalledOnce();
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
