@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import {
   ONE_PIXEL_PNG_B64,
   SESSION_LIST_DEFAULTS,
@@ -46,6 +47,7 @@ suite.define(() => {
       const firstPage = await context.newPage();
       await installMockGateway(firstPage);
       await firstPage.goto(`${suite.server.baseUrl}new`);
+      await waitForControlUiGatewayReady(firstPage);
       const firstMessage = firstPage.locator(".new-session-page__message");
       await firstMessage.fill(text);
       await waitForCommittedNewSessionDraft(firstPage, text, 0);
