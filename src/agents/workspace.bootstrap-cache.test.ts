@@ -147,6 +147,9 @@ describe("workspace bootstrap file caching", () => {
     expectAgentsContent(await loadSessionAgentsFile(workspaceDir, sessionKey), content1);
 
     // In-place edit: same path, same size, restore mtime — only ctime changes.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 10);
+    });
     await fs.writeFile(filePath, content2, "utf-8");
     await fs.utimes(filePath, originalStat.atime, originalStat.mtime);
 
