@@ -208,7 +208,7 @@ export function renderWorkboard(props: WorkboardProps) {
     byStatus.get(card.status)?.push(card);
   }
   const visibleStatuses =
-    state.hideEmptyColumns || state.viewPreset !== "all"
+    state.viewPreset !== "all"
       ? state.statuses.filter((status) => (byStatus.get(status)?.length ?? 0) > 0)
       : state.statuses;
   const activeFiltering =
@@ -358,14 +358,15 @@ export function renderWorkboard(props: WorkboardProps) {
             <label class="workboard-toggle">
               <input
                 type="checkbox"
-                name="workboard-hide-empty-columns"
-                .checked=${state.hideEmptyColumns}
+                name="workboard-collapse-empty-columns"
+                .checked=${state.collapseEmptyColumns}
                 @change=${(event: Event) => {
-                  state.hideEmptyColumns = (event.currentTarget as HTMLInputElement).checked;
+                  state.collapseEmptyColumns = (event.currentTarget as HTMLInputElement).checked;
+                  state.expandedEmptyStatuses.clear();
                   props.onRequestUpdate?.();
                 }}
               />
-              <span>${t("workboard.hideEmptyColumns")}</span>
+              <span>${t("workboard.collapseEmptyColumns")}</span>
             </label>
           </div>
           <div class="workboard-toolbar__actions">
@@ -433,7 +434,7 @@ export function renderWorkboard(props: WorkboardProps) {
             `
           : html`
               <div
-                class="workboard-board workboard-board--${state.layout} ${visibleStatuses.length ===
+                class="workboard-board workboard-board--page workboard-board--${state.layout} ${visibleStatuses.length ===
                 1
                   ? "workboard-board--single-column"
                   : ""}"

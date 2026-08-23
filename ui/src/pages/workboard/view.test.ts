@@ -820,6 +820,9 @@ describe("renderWorkboard", () => {
     expect(container.querySelector(".workboard-board")?.className).toContain(
       "workboard-board--single-column",
     );
+    expect(container.querySelector(".workboard-board")?.className).toContain(
+      "workboard-board--page",
+    );
     expect(container.querySelector(".workboard-column h2")?.textContent).toContain("Ready");
     expect(
       [...container.querySelectorAll(".workboard-column h2")].map((heading) => heading.textContent),
@@ -966,7 +969,7 @@ describe("renderWorkboard", () => {
     expect(container.querySelector(".workboard-select__trigger")).toBeNull();
   });
 
-  it("can hide empty columns while keeping populated columns visible", () => {
+  it("collapses empty columns by default and can expand them together", () => {
     const { state, container, renderView } = createWorkboardView({
       onRequestUpdate: () => undefined,
     });
@@ -977,23 +980,47 @@ describe("renderWorkboard", () => {
     ];
     renderView();
     expect(container.querySelectorAll(".workboard-column")).toHaveLength(9);
+    expect(container.querySelectorAll(".workboard-column--collapsed")).toHaveLength(8);
+    expect(container.querySelector(".workboard-column--todo")?.classList).not.toContain(
+      "workboard-column--collapsed",
+    );
 
     const toggle = container.querySelector<HTMLInputElement>(
-      'input[name="workboard-hide-empty-columns"]',
+      'input[name="workboard-collapse-empty-columns"]',
     );
     expect(toggle).toBeInstanceOf(HTMLInputElement);
-    toggle!.checked = true;
+    expect(toggle?.checked).toBe(true);
+    toggle!.checked = false;
     toggle!.dispatchEvent(new Event("change", { bubbles: true }));
     renderView();
 
-    const columnHeadings = Array.from(
-      container.querySelectorAll<HTMLElement>(".workboard-column__header h2"),
-    ).map((heading) => heading.textContent?.trim());
-    expect(state.hideEmptyColumns).toBe(true);
-    expect(container.querySelectorAll(".workboard-column")).toHaveLength(1);
-    expect(columnHeadings).toEqual(["Todo"]);
-    expect(container.textContent).toContain("Todo");
-    expect(container.textContent).toContain("Keep visible");
+    expect(state.collapseEmptyColumns).toBe(false);
+    expect(container.querySelectorAll(".workboard-column")).toHaveLength(9);
+    expect(container.querySelector(".workboard-column--collapsed")).toBeNull();
+  });
+
+  it("manually collapses and expands a populated column", () => {
+    const { state, container, renderView } = createWorkboardView({
+      onRequestUpdate: () => undefined,
+    });
+    state.cards = [createWorkboardCard({ title: "Keep visible" })];
+    renderView();
+
+    buttonByLabel(container, "Collapse Todo column")?.click();
+    renderView();
+
+    expect(state.collapsedStatuses).toContain("todo");
+    expect(container.querySelector(".workboard-column--todo")?.classList).toContain(
+      "workboard-column--collapsed",
+    );
+
+    buttonByLabel(container, "Expand Todo column")?.click();
+    renderView();
+
+    expect(state.collapsedStatuses).not.toContain("todo");
+    expect(container.querySelector(".workboard-column--todo")?.classList).not.toContain(
+      "workboard-column--collapsed",
+    );
   });
 
   it("does not render Invalid Date for Date-invalid card timestamps", () => {
