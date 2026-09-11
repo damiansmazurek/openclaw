@@ -1854,6 +1854,7 @@
                       "plugins/admin-http-rpc",
                       "plugins/beam",
                       "plugins/geolocation",
+                      "plugins/intake-ledger",
                       "plugins/logbook",
                       "plugins/oc-path",
                       "plugins/webhooks",

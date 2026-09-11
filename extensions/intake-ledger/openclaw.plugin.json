@@ -1,0 +1,91 @@
+{
+  "id": "intake-ledger",
+  "name": "Intake Ledger",
+  "description": "Durable request-intake ledger with atomic receipts, explicit dispositions, outbox retry, and unresolved-request reconciliation.",
+  "categories": ["tools"],
+  "enabledByDefault": false,
+  "activation": {
+    "onStartup": true,
+    "onCommands": ["intake-ledger"]
+  },
+  "cliCommands": [
+    {
+      "name": "intake-ledger",
+      "description": "Inspect, reconcile, and audit the request-intake ledger",
+      "hasSubcommands": true
+    }
+  ],
+  "contracts": {
+    "tools": [
+      "intake_ledger_record_requests",
+      "intake_ledger_disposition",
+      "intake_ledger_audit",
+      "intake_ledger_canonical_ready",
+      "intake_ledger_ack_delivery",
+      "intake_ledger_backfill"
+    ]
+  },
+  "toolMetadata": {
+    "intake_ledger_record_requests": {},
+    "intake_ledger_disposition": {},
+    "intake_ledger_audit": {},
+    "intake_ledger_canonical_ready": {},
+    "intake_ledger_ack_delivery": {},
+    "intake_ledger_backfill": {}
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "boards": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "channel"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "channel": { "type": "string", "minLength": 1 },
+            "accountId": { "type": "string" },
+            "peerIds": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "notionDataSourceId": { "type": "string" },
+            "automationJobId": { "type": "string" },
+            "unresolvedAlertAfterMs": { "type": "integer", "minimum": 1000 }
+          }
+        }
+      },
+      "implementationAgentIds": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 }
+      },
+      "automationJobId": { "type": "string" },
+      "reconcileIntervalMs": { "type": "integer", "minimum": 1000 },
+      "inFlightTimeoutMs": { "type": "integer", "minimum": 1000 }
+    }
+  },
+  "uiHints": {
+    "boards": {
+      "label": "Intake boards",
+      "help": "Channel and peer matchers that persist inbound envelopes before task lookup."
+    },
+    "implementationAgentIds": {
+      "label": "Implementation worker agent IDs",
+      "help": "These agents see only created or linked canonical tasks, never unresolved intake."
+    },
+    "automationJobId": {
+      "label": "Notion automation cron job id",
+      "help": "Gateway cron job nudged to claim/complete Notion outbox items. Missing job is a bounded configuration failure."
+    },
+    "reconcileIntervalMs": {
+      "label": "Reconcile interval (ms)",
+      "advanced": true
+    },
+    "inFlightTimeoutMs": {
+      "label": "In-flight outbox timeout (ms)",
+      "advanced": true
+    }
+  }
+}

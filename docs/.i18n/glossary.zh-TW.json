@@ -40,6 +40,10 @@
     "target": "心跳偵測"
   },
   {
+    "source": "Intake Ledger",
+    "target": "Intake Ledger"
+  },
+  {
     "source": "Feishu",
     "target": "Feishu"
   },
